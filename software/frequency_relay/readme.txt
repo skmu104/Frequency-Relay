@@ -1,7 +1,7 @@
 Readme
 
 DESCRIPTION:
-Simple program that prints "Hello from Nios II"
+Program that operates as a frequency relay
 
 The memory footprint of this hosted application is intended to be small (under 100 kbytes) by default
 using a standard reference deisgn.
