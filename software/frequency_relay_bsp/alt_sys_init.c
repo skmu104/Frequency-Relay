@@ -1,10 +1,10 @@
 /*
  * alt_sys_init.c - HAL initialization source
  *
- * Machine generated for CPU 'nios2' in SOPC Builder design 'nios2'
- * SOPC Builder design path: C:/Users/suraj/OneDrive/Documents/c723_assignment1/nios2.sopcinfo
+ * Machine generated for CPU 'cpu' in SOPC Builder design 'nios2_system'
+ * SOPC Builder design path: ../../nios2_system.sopcinfo
  *
- * Generated: Sat Apr 11 16:18:30 NZST 2020
+ * Generated: Thu Aug 29 11:53:02 NZST 2019
  */
 
 /*
@@ -58,32 +58,24 @@
  * Device headers
  */
 
-#include "altera_nios2_qsys_irq.h"
-#include "altera_avalon_cfi_flash.h"
+#include "altera_nios2_gen2_irq.h"
 #include "altera_avalon_jtag_uart.h"
 #include "altera_avalon_lcd_16207.h"
 #include "altera_avalon_sysid_qsys.h"
 #include "altera_avalon_timer.h"
 #include "altera_avalon_uart.h"
-#include "altera_up_avalon_ps2.h"
-#include "altera_up_avalon_video_character_buffer_with_dma.h"
-#include "altera_up_avalon_video_pixel_buffer_dma.h"
 
 /*
  * Allocate the device storage
  */
 
-ALTERA_NIOS2_QSYS_IRQ_INSTANCE ( NIOS2, nios2);
-ALTERA_AVALON_CFI_FLASH_INSTANCE ( FLASH_CONTROLLER, flash_controller);
+ALTERA_NIOS2_GEN2_IRQ_INSTANCE ( CPU, cpu);
 ALTERA_AVALON_JTAG_UART_INSTANCE ( JTAG_UART, jtag_uart);
-ALTERA_AVALON_LCD_16207_INSTANCE ( CHARACTER_LCD, character_lcd);
-ALTERA_AVALON_SYSID_QSYS_INSTANCE ( SYSTEM_ID, system_id);
-ALTERA_AVALON_TIMER_INSTANCE ( TIMER1MS, timer1ms);
-ALTERA_AVALON_TIMER_INSTANCE ( TIMER1US, timer1us);
+ALTERA_AVALON_LCD_16207_INSTANCE ( LCD, lcd);
+ALTERA_AVALON_SYSID_QSYS_INSTANCE ( CPU_SYSID, cpu_sysid);
+ALTERA_AVALON_TIMER_INSTANCE ( TIMER1, timer1);
+ALTERA_AVALON_TIMER_INSTANCE ( TIMER2, timer2);
 ALTERA_AVALON_UART_INSTANCE ( UART, uart);
-ALTERA_UP_AVALON_PS2_INSTANCE ( PS2, ps2);
-ALTERA_UP_AVALON_VIDEO_CHARACTER_BUFFER_WITH_DMA_INSTANCE ( VIDEO_CHARACTER_BUFFER_WITH_DMA, video_character_buffer_with_dma);
-ALTERA_UP_AVALON_VIDEO_PIXEL_BUFFER_DMA_INSTANCE ( VIDEO_PIXEL_BUFFER_DMA, video_pixel_buffer_dma);
 
 /*
  * Initialize the interrupt controller devices
@@ -95,7 +87,7 @@ ALTERA_UP_AVALON_VIDEO_PIXEL_BUFFER_DMA_INSTANCE ( VIDEO_PIXEL_BUFFER_DMA, video
 
 void alt_irq_init ( const void* base )
 {
-    ALTERA_NIOS2_QSYS_IRQ_INIT ( NIOS2, nios2);
+    ALTERA_NIOS2_GEN2_IRQ_INIT ( CPU, cpu);
     alt_irq_cpu_enable_interrupts();
 }
 
@@ -106,14 +98,10 @@ void alt_irq_init ( const void* base )
 
 void alt_sys_init( void )
 {
-    ALTERA_AVALON_TIMER_INIT ( TIMER1MS, timer1ms);
-    ALTERA_AVALON_TIMER_INIT ( TIMER1US, timer1us);
-    ALTERA_AVALON_CFI_FLASH_INIT ( FLASH_CONTROLLER, flash_controller);
+    ALTERA_AVALON_TIMER_INIT ( TIMER1, timer1);
+    ALTERA_AVALON_TIMER_INIT ( TIMER2, timer2);
     ALTERA_AVALON_JTAG_UART_INIT ( JTAG_UART, jtag_uart);
-    ALTERA_AVALON_LCD_16207_INIT ( CHARACTER_LCD, character_lcd);
-    ALTERA_AVALON_SYSID_QSYS_INIT ( SYSTEM_ID, system_id);
+    ALTERA_AVALON_LCD_16207_INIT ( LCD, lcd);
+    ALTERA_AVALON_SYSID_QSYS_INIT ( CPU_SYSID, cpu_sysid);
     ALTERA_AVALON_UART_INIT ( UART, uart);
-    ALTERA_UP_AVALON_PS2_INIT ( PS2, ps2);
-    ALTERA_UP_AVALON_VIDEO_CHARACTER_BUFFER_WITH_DMA_INIT ( VIDEO_CHARACTER_BUFFER_WITH_DMA, video_character_buffer_with_dma);
-    ALTERA_UP_AVALON_VIDEO_PIXEL_BUFFER_DMA_INIT ( VIDEO_PIXEL_BUFFER_DMA, video_pixel_buffer_dma);
 }

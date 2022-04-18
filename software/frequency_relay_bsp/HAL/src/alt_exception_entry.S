@@ -54,73 +54,92 @@
         .set noat
 
         /*
-         * The top and bottom of the exception stack
+         * The top and bottom of the exception stack.
          */
 #ifdef ALT_EXCEPTION_STACK
-
         .globl __alt_exception_stack_pointer
 
 #ifdef ALT_STACK_CHECK
-
         .globl __alt_exception_stack_limit
 
         /*
-         * We need to store the value of the stack limit after interrupt somewhere.
+         * Store the value of the stack limit after interrupt somewhere.
          */
         .globl  alt_exception_old_stack_limit
+#endif /* ALT_STACK_CHECK */
+#endif /* ALT_EXCEPTION_STACK */
 
-#endif
-#endif
-
+/* 
+ * The code at alt_exception is located at the Nios II exception
+ * handler address.
+ */
         .section .exceptions.entry.label, "xa"
-
         .globl alt_exception
         .type alt_exception, @function
 alt_exception:
 
+        /*
+         * The code for detecting a likely fatal ECC exception is
+         * linked here before the normal exception handler code if required.
+         * This is handled by the linker script and putting that code
+         * in the .exceptions.entry.ecc_fatal section.
+         */
+
+        /*
+         * Now start the normal exception handler code.
+         */
         .section .exceptions.entry, "xa"
 
 #ifdef ALT_EXCEPTION_STACK
-
 #ifdef ALT_STACK_CHECK
+        /* 
+         * When runtime stack checking is enabled, the et register
+         * contains the stack limit. Save this in memory before
+         * overwriting the et register.
+         */
         stw   et, %gprel(alt_exception_old_stack_limit)(gp)
-#endif
+#endif /* ALT_STACK_CHECK */
 
-        movhi et, %hiadj(__alt_exception_stack_pointer - 80)
-        addi  et, et, %lo(__alt_exception_stack_pointer - 80) 
+        /* 
+         * Switch to the exception stack and save the current stack pointer
+         * in memory. Uses the et register as a scratch register.
+         */
+        movhi et, %hi(__alt_exception_stack_pointer - 80)
+        ori   et, et, %lo(__alt_exception_stack_pointer - 80) 
         stw   sp, 76(et)
         mov   sp, et
 
 #ifdef ALT_STACK_CHECK
-        movhi et, %hiadj(__alt_exception_stack_limit)
-        addi  et, et, %lo(__alt_exception_stack_limit) 
-        stw   et, %gprel(alt_stack_limit_value)(gp)
-#endif
-
-#else
-        /* 
-         * Process an exception.  For all exceptions we must preserve all
-         * caller saved registers on the stack (See the Nios2 ABI
-         * documentation for details).
+        /*
+         * Restore the stack limit from memory to the et register.
          */
+        movhi et, %hi(__alt_exception_stack_limit)
+        ori   et, et, %lo(__alt_exception_stack_limit) 
+        stw   et, %gprel(alt_stack_limit_value)(gp)
+#endif /* ALT_STACK_CHECK */
 
+#else /* ALT_EXCEPTION_STACK disabled */
+        /* 
+         * Reserve space on normal stack for registers about to be pushed.
+         */
         addi  sp, sp, -76
 
 #ifdef ALT_STACK_CHECK
-
+        /* Ensure stack didn't just overflow. */
         bltu  sp, et, .Lstack_overflow
+#endif /* ALT_STACK_CHECK */
 
-#endif
+#endif /* ALT_EXCEPTION_STACK */
 
-#endif
-
-        stw   ra,  0(sp)
-
-        /*
+        /* 
+         * Process an exception.  For all exceptions we must preserve all
+         * caller saved registers on the stack (See the Nios II ABI
+         * documentation for details).
+         *
          * Leave a gap in the stack frame at 4(sp) for the muldiv handler to
          * store zero into.
          */
-
+        stw   ra,  0(sp)
         stw   r1,   8(sp)
         stw   r2,  12(sp)
         stw   r3,  16(sp)
@@ -128,9 +147,7 @@ alt_exception:
         stw   r5,  24(sp)
         stw   r6,  28(sp)
         stw   r7,  32(sp)
-
-        rdctl r5, estatus
-
+        rdctl r5, estatus   /* Read early to avoid usage stall */
         stw   r8,  36(sp)
         stw   r9,  40(sp)
         stw   r10, 44(sp)
@@ -176,8 +193,43 @@ alt_exception:
          * instruction that caused the exception is written in r2, which these
          * handlers will utilize.
          */
-        stw   ea,  72(sp)  /* Don't re-issue */
-        ldw   r2, -4(ea)   /* Instruction that caused exception */
+        stw ea, 72(sp) /* EA is PC+4 so will skip over instruction causing exception */
+
+#ifdef NIOS2_CDX_PRESENT
+        mov.n r4, ea            /* EA contains PC+4 of instruction that caused the exception */
+        subi.n r4, r4, 4        /* Calculate PC */
+        ldhu.n r2, 0(r4)        /* Load least-significant 16 bits of instruction */
+        andi r5, r2, 0x7        /* Mask off all bits except the 3 most-significant bits of OP field */
+
+        /*
+         * These instructions compare the MSB 3 bits of OP to 0x1, 0x3, and 0x5
+         * which is where all the 16-bit instructions live.
+         */
+        subi.n r5, r5, 1
+        beqz.n r5, .Lunknown_16bit
+        subi.n r5, r5, 2
+        beqz.n r5, .Lunknown_16bit
+        subi.n r5, r5, 2
+        beqz.n r5, .Lunknown_16bit
+
+.Lunknown_32bit:
+        stw ea, 72(sp) /* EA is PC+4 so will skip over instruction causing exception */
+
+        /* Load most-significant 16 bits of instruction */
+        ldhu.n r3, 2(r4)
+        slli.n r3, r3, 16
+        or.n r2, r2, r3 /* 32-bit instruction value that caused exception */
+        br.n .Lunknown_inst_loaded
+
+.Lunknown_16bit:
+        addi.n r4, r4, 2 /* Need PC+2 to skip over instruction causing exception */
+        stw r4, 72(sp)
+
+#else /* CDX is not Enabled and all instructions are 32bits */
+        ldw r2, -4(ea) /* Instruction value that caused exception */
+#endif
+
+.Lunknown_inst_loaded:
 
         /*
          * Other exception handling code, if enabled, will be linked here.
@@ -275,21 +327,19 @@ alt_exception:
          *    interrupt handler has been executed will cause spurious
          *    interrupts)
          */
+alt_exception_unknown:
 #ifdef NIOS2_HAS_DEBUG_STUB
        /*
         *  Either tell the user now (if there is a debugger attached) or go into
         *  the debug monitor which will loop until a debugger is attached.
         */
         break
-#else
+#else /* NIOS2_HAS_DEBUG_STUB disabled */
        /*
-        *  If there is no debug stub then a BREAK will probably cause a reboot.
-        *  An infinate loop will probably be more useful.
+        *  If there is no debug stub, an infinite loop is more useful.
         */
-0:
-        br   0b
+        br   alt_exception_unknown
 #endif /* NIOS2_HAS_DEBUG_STUB */
-
 #endif /* ALT_INCLUDE_INSTRUCTION_RELATED_EXCEPTION_API */
 
         .section .exceptions.exit.label
@@ -316,10 +366,8 @@ alt_exception:
         ldw   r6,  28(sp)
         ldw   r7,  32(sp)
 
-#ifdef ALT_EXCEPTION_STACK
-#ifdef ALT_STACK_CHECK
+#if defined(ALT_EXCEPTION_STACK) && defined(ALT_STACK_CHECK)
         ldw   et, %gprel(alt_exception_old_stack_limit)(gp)
-#endif
 #endif
 
         ldw   r8,  36(sp)
@@ -332,18 +380,14 @@ alt_exception:
         ldw   r15, 64(sp)
 
 #ifdef ALT_EXCEPTION_STACK
-
 #ifdef ALT_STACK_CHECK
         stw   et, %gprel(alt_stack_limit_value)(gp)
         stw   zero, %gprel(alt_exception_old_stack_limit)(gp)
-#endif
-
+#endif /* ALT_STACK_CHECK */
         ldw   sp,  76(sp)
-
-#else
+#else /* ALT_EXCEPTION_STACK disabled */
         addi  sp, sp, 76
-
-#endif
+#endif /* ALT_EXCEPTION_STACK */
 
         /*
          * Return to the interrupted instruction.
@@ -352,9 +396,7 @@ alt_exception:
         eret
 
 #ifdef ALT_STACK_CHECK
-
 .Lstack_overflow:
         break 3
-
-#endif
+#endif /* ALT_STACK_CHECK */
 

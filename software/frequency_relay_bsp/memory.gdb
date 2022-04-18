@@ -1,9 +1,9 @@
 # memory.gdb - GDB memory region definitions
 #
-# Machine generated for CPU 'nios2' in SOPC Builder design 'nios2'
-# SOPC Builder design path: C:/Users/suraj/OneDrive/Documents/c723_assignment1/nios2.sopcinfo
+# Machine generated for CPU 'cpu' in SOPC Builder design 'nios2_system'
+# SOPC Builder design path: ../../nios2_system.sopcinfo
 #
-# Generated: Sat Apr 11 16:18:30 NZST 2020
+# Generated: Thu Aug 29 11:53:02 NZST 2019
 
 # DO NOT MODIFY THIS FILE
 #
@@ -46,11 +46,8 @@
 # The cache attribute is specified which improves GDB performance
 # by allowing GDB to cache memory contents on the host.
 
-# onchip_memory
-memory 0x0 0x32000 cache
-
-# flash_controller
-memory 0x1000000 0x1800000 cache
-
 # sdram
-memory 0x8000000 0x10000000 cache
+memory 0x800000 0x1000000 cache
+
+# onchip_mem
+memory 0x1080000 0x1087800 cache

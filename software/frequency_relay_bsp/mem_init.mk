@@ -44,6 +44,10 @@ ifeq ($(FLASH2DAT),)
 FLASH2DAT := flash2dat
 endif
 
+ifeq ($(ALT_FILE_CONVERT),)
+ALT_FILE_CONVERT := alt-file-convert
+endif
+
 ifeq ($(NM),)
 NM := nios2-elf-nm
 endif
@@ -109,7 +113,9 @@ target_stem = $(notdir $(basename $@))
 
 mem_start_address = $($(target_stem)_START)
 mem_end_address = $($(target_stem)_END)
+mem_span = $($(target_stem)_SPAN)
 mem_width = $($(target_stem)_WIDTH)
+mem_hex_width = $($(target_stem)_HEX_DATA_WIDTH)
 mem_endianness = $($(target_stem)_ENDIANNESS)
 mem_create_lanes = $($(target_stem)_CREATE_LANES)
 
@@ -144,90 +150,66 @@ flash2dat_extra_args = $(mem_pad_flag) $(mem_reloc_input_flag)
 
 # This following VERSION comment indicates the version of the tool used to 
 # generate this makefile. A makefile variable is provided for VERSION as well. 
-# ACDS_VERSION: 13.0
-ACDS_VERSION := 13.0
+# ACDS_VERSION: 16.1
+ACDS_VERSION := 16.1
 
 # This following BUILD_NUMBER comment indicates the build number of the tool 
 # used to generate this makefile. 
-# BUILD_NUMBER: 156
+# BUILD_NUMBER: 196
 
 # Optimize for simulation
 SIM_OPTIMIZE ?= 0
 
 # The CPU reset address as needed by elf2flash
-RESET_ADDRESS ?= 0x01000000
+RESET_ADDRESS ?= 0x00800000
+
+# The specific Nios II ELF file format to use.
+NIOS2_ELF_FORMAT ?= elf32-littlenios2
 
 #-------------------------------------
 # Pre-Initialized Memory Descriptions
 #-------------------------------------
 
-# Memory: flash_controller
-MEM_0 := flash_controller
-$(MEM_0)_NAME := flash_controller
+# Memory: onchip_mem
+MEM_0 := nios2_system_onchip_mem
+$(MEM_0)_NAME := onchip_mem
 $(MEM_0)_MEM_INIT_FILE_PARAM_NAME := INIT_FILE
+HEX_FILES += $(MEM_INIT_DIR)/$(MEM_0).hex
+MEM_INIT_INSTALL_FILES += $(MEM_INIT_INSTALL_DIR)/$(MEM_0).hex
 DAT_FILES += $(HDL_SIM_DIR)/$(MEM_0).dat
 HDL_SIM_INSTALL_FILES += $(HDL_SIM_INSTALL_DIR)/$(MEM_0).dat
 SYM_FILES += $(HDL_SIM_DIR)/$(MEM_0).sym
 HDL_SIM_INSTALL_FILES += $(HDL_SIM_INSTALL_DIR)/$(MEM_0).sym
-FLASH_FILES += $(MEM_0).flash
-$(MEM_0)_START := 0x01000000
-$(MEM_0)_END := 0x017fffff
-$(MEM_0)_HIERARCHICAL_PATH := flash_controller
-$(MEM_0)_WIDTH := 8
+$(MEM_0)_START := 0x01080000
+$(MEM_0)_END := 0x010877ff
+$(MEM_0)_SPAN := 0x00007800
+$(MEM_0)_HIERARCHICAL_PATH := onchip_mem
+$(MEM_0)_WIDTH := 32
+$(MEM_0)_HEX_DATA_WIDTH := 32
 $(MEM_0)_ENDIANNESS := --little-endian-mem
 $(MEM_0)_CREATE_LANES := 0
-$(MEM_0)_CFI_FLAGS := --base=$($(MEM_0)_START) --end=$($(MEM_0)_END) --reset=$(RESET_ADDRESS)
-$(MEM_0)_BOOT_LOADER_FLAG := --boot="$(BOOT_LOADER_CFI)"
 
-$(HDL_SIM_DIR)/$(MEM_0).dat: $(MEM_0).flash
-	$(post-process-info)
-	$(MKDIR) -p $(@D)
-	bash -c '$(FLASH2DAT) --infile=$< --outfile=$@ \
-		--base=$(mem_start_address) --end=$(mem_end_address) --width=$(mem_width) \
-		--create-lanes=$(mem_create_lanes) $(flash2dat_extra_args)'
+.PHONY: onchip_mem
+onchip_mem: check_elf_exists $(MEM_INIT_DIR)/$(MEM_0).hex $(HDL_SIM_DIR)/$(MEM_0).dat $(HDL_SIM_DIR)/$(MEM_0).sym
 
-
-FLASH_DAT_FILES += $(HDL_SIM_DIR)/$(MEM_0).dat
-
-.PHONY: flash_controller
-flash_controller: check_elf_exists $(HDL_SIM_DIR)/$(MEM_0).dat $(HDL_SIM_DIR)/$(MEM_0).sym $(MEM_0).flash
-
-# Memory: onchip_memory
-MEM_1 := nios2_onchip_memory
-$(MEM_1)_NAME := onchip_memory
-$(MEM_1)_MEM_INIT_FILE_PARAM_NAME := INIT_FILE
-HEX_FILES += $(MEM_INIT_DIR)/$(MEM_1).hex
-MEM_INIT_INSTALL_FILES += $(MEM_INIT_INSTALL_DIR)/$(MEM_1).hex
+# Memory: sdram
+MEM_1 := sdram
+$(MEM_1)_NAME := sdram
 DAT_FILES += $(HDL_SIM_DIR)/$(MEM_1).dat
 HDL_SIM_INSTALL_FILES += $(HDL_SIM_INSTALL_DIR)/$(MEM_1).dat
 SYM_FILES += $(HDL_SIM_DIR)/$(MEM_1).sym
 HDL_SIM_INSTALL_FILES += $(HDL_SIM_INSTALL_DIR)/$(MEM_1).sym
-$(MEM_1)_START := 0x00000000
-$(MEM_1)_END := 0x00031fff
-$(MEM_1)_HIERARCHICAL_PATH := onchip_memory
-$(MEM_1)_WIDTH := 32
+$(MEM_1)_START := 0x00800000
+$(MEM_1)_END := 0x00ffffff
+$(MEM_1)_SPAN := 0x00800000
+$(MEM_1)_HIERARCHICAL_PATH := sdram
+$(MEM_1)_WIDTH := 16
+$(MEM_1)_HEX_DATA_WIDTH := 16
 $(MEM_1)_ENDIANNESS := --little-endian-mem
 $(MEM_1)_CREATE_LANES := 0
 
-.PHONY: onchip_memory
-onchip_memory: check_elf_exists $(MEM_INIT_DIR)/$(MEM_1).hex $(HDL_SIM_DIR)/$(MEM_1).dat $(HDL_SIM_DIR)/$(MEM_1).sym
-
-# Memory: sdram
-MEM_2 := sdram
-$(MEM_2)_NAME := sdram
-DAT_FILES += $(HDL_SIM_DIR)/$(MEM_2).dat
-HDL_SIM_INSTALL_FILES += $(HDL_SIM_INSTALL_DIR)/$(MEM_2).dat
-SYM_FILES += $(HDL_SIM_DIR)/$(MEM_2).sym
-HDL_SIM_INSTALL_FILES += $(HDL_SIM_INSTALL_DIR)/$(MEM_2).sym
-$(MEM_2)_START := 0x08000000
-$(MEM_2)_END := 0x0fffffff
-$(MEM_2)_HIERARCHICAL_PATH := sdram
-$(MEM_2)_WIDTH := 32
-$(MEM_2)_ENDIANNESS := --little-endian-mem
-$(MEM_2)_CREATE_LANES := 0
-
 .PHONY: sdram
-sdram: check_elf_exists $(HDL_SIM_DIR)/$(MEM_2).dat $(HDL_SIM_DIR)/$(MEM_2).sym
+sdram: check_elf_exists $(HDL_SIM_DIR)/$(MEM_1).dat $(HDL_SIM_DIR)/$(MEM_1).sym
 
 
 #END OF BSP SPECIFIC
@@ -304,18 +286,29 @@ endif
 $(filter-out $(FLASH_DAT_FILES),$(DAT_FILES)): %.dat: $(ELF)
 	$(post-process-info)
 	@$(MKDIR) $(@D)
-	bash -c '$(ELF2DAT) --infile=$< --outfile=$@ \
+	$(ELF2DAT) --infile=$< --outfile=$@ \
 		--base=$(mem_start_address) --end=$(mem_end_address) --width=$(mem_width) \
-		$(mem_endianness) --create-lanes=$(mem_create_lanes) $(elf2dat_extra_args)'
+		$(mem_endianness) --create-lanes=$(mem_create_lanes) $(elf2dat_extra_args)
 
 $(foreach i,0 1 2 3 4 5 6 7,%_lane$(i).dat): %.dat
 	@true
 
+ELF_TO_HEX_CMD_NO_BOOTLOADER = $(ELF2HEX) $< $(mem_start_address) $(mem_end_address) --width=$(mem_hex_width) \
+			$(mem_endianness) --create-lanes=$(mem_create_lanes) $(elf2hex_extra_args) $@
+			
+ELF_TO_HEX_CMD_WITH_BOOTLOADER = $(ALT_FILE_CONVERT) -I $(NIOS2_ELF_FORMAT) -O hex --input=$< --output=$@ \
+			--base=$(mem_start_address) --end=$(mem_end_address) --reset=$(RESET_ADDRESS) \
+			--out-data-width=$(mem_hex_width) $(flash_mem_boot_loader_flag)
+
+ELF_TO_HEX_CMD = $(strip $(if $(flash_mem_boot_loader_flag), \
+	$(ELF_TO_HEX_CMD_WITH_BOOTLOADER), \
+	$(ELF_TO_HEX_CMD_NO_BOOTLOADER) \
+	))
+
 $(HEX_FILES): %.hex: $(ELF)
 	$(post-process-info)
 	@$(MKDIR) $(@D)
-	bash -c '$(ELF2HEX) $< $(mem_start_address) $(mem_end_address) --width=$(mem_width) \
-		$(mem_endianness) --create-lanes=$(mem_create_lanes) $(elf2hex_extra_args) $@'
+	$(ELF_TO_HEX_CMD)
 
 $(SYM_FILES): %.sym: $(ELF)
 	$(post-process-info)
@@ -325,8 +318,8 @@ $(SYM_FILES): %.sym: $(ELF)
 $(FLASH_FILES): %.flash: $(ELF)
 	$(post-process-info)
 	@$(MKDIR) $(@D)
-	bash -c '$(ELF2FLASH) --input=$< --outfile=$@ --sim_optimize=$(SIM_OPTIMIZE) $(mem_endianness) \
-		$(elf2flash_extra_args)'
+	$(ELF2FLASH) --input=$< --outfile=$@ --sim_optimize=$(SIM_OPTIMIZE) $(mem_endianness) \
+		$(elf2flash_extra_args)
 
 #
 # Function generate_spd_entry

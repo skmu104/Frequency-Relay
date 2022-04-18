@@ -1,10 +1,10 @@
 /*
  * linker.h - Linker script mapping information
  *
- * Machine generated for CPU 'nios2' in SOPC Builder design 'nios2'
- * SOPC Builder design path: C:/Users/suraj/OneDrive/Documents/c723_assignment1/nios2.sopcinfo
+ * Machine generated for CPU 'cpu' in SOPC Builder design 'nios2_system'
+ * SOPC Builder design path: ../../nios2_system.sopcinfo
  *
- * Generated: Sat Apr 11 16:18:30 NZST 2020
+ * Generated: Thu Aug 29 11:53:02 NZST 2019
  */
 
 /*
@@ -65,16 +65,12 @@
  *
  */
 
-#define FLASH_CONTROLLER_REGION_BASE 0x1000020
-#define FLASH_CONTROLLER_REGION_SPAN 8388576
-#define ONCHIP_MEMORY_BEFORE_EXCEPTION_REGION_BASE 0x0
-#define ONCHIP_MEMORY_BEFORE_EXCEPTION_REGION_SPAN 32
-#define ONCHIP_MEMORY_REGION_BASE 0x20
-#define ONCHIP_MEMORY_REGION_SPAN 204768
-#define RESET_REGION_BASE 0x1000000
+#define ONCHIP_MEM_REGION_BASE 0x1080000
+#define ONCHIP_MEM_REGION_SPAN 30720
+#define RESET_REGION_BASE 0x800000
 #define RESET_REGION_SPAN 32
-#define SDRAM_REGION_BASE 0x8000000
-#define SDRAM_REGION_SPAN 134217728
+#define SDRAM_REGION_BASE 0x800020
+#define SDRAM_REGION_SPAN 8388576
 
 
 /*
@@ -82,10 +78,26 @@
  *
  */
 
-#define ALT_EXCEPTIONS_DEVICE ONCHIP_MEMORY
-#define ALT_RESET_DEVICE FLASH_CONTROLLER
+#define ALT_EXCEPTIONS_DEVICE SDRAM
+#define ALT_RESET_DEVICE SDRAM
 #define ALT_RODATA_DEVICE SDRAM
 #define ALT_RWDATA_DEVICE SDRAM
-#define ALT_TEXT_DEVICE ONCHIP_MEMORY
+#define ALT_TEXT_DEVICE SDRAM
+
+
+/*
+ * Initialization code at the reset address is allowed (e.g. no external bootloader).
+ *
+ */
+
+#define ALT_ALLOW_CODE_AT_RESET
+
+
+/*
+ * The alt_load() facility is called from crt0 to copy sections into RAM.
+ *
+ */
+
+#define ALT_LOAD_COPY_RWDATA
 
 #endif /* __LINKER_H_ */

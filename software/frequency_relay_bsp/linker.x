@@ -1,10 +1,10 @@
 /*
  * linker.x - Linker script
  *
- * Machine generated for CPU 'nios2' in SOPC Builder design 'nios2'
- * SOPC Builder design path: C:/Users/suraj/OneDrive/Documents/c723_assignment1/nios2.sopcinfo
+ * Machine generated for CPU 'cpu' in SOPC Builder design 'nios2_system'
+ * SOPC Builder design path: ../../nios2_system.sopcinfo
  *
- * Generated: Sat Apr 11 16:18:30 NZST 2020
+ * Generated: Thu Aug 29 11:53:02 NZST 2019
  */
 
 /*
@@ -50,17 +50,14 @@
 
 MEMORY
 {
-    onchip_memory_BEFORE_EXCEPTION : ORIGIN = 0x0, LENGTH = 32
-    onchip_memory : ORIGIN = 0x20, LENGTH = 204768
-    reset : ORIGIN = 0x1000000, LENGTH = 32
-    flash_controller : ORIGIN = 0x1000020, LENGTH = 8388576
-    sdram : ORIGIN = 0x8000000, LENGTH = 134217728
+    reset : ORIGIN = 0x800000, LENGTH = 32
+    sdram : ORIGIN = 0x800020, LENGTH = 8388576
+    onchip_mem : ORIGIN = 0x1080000, LENGTH = 30720
 }
 
 /* Define symbols for each memory base-address */
-__alt_mem_onchip_memory = 0x0;
-__alt_mem_flash_controller = 0x1000000;
-__alt_mem_sdram = 0x8000000;
+__alt_mem_sdram = 0x800000;
+__alt_mem_onchip_mem = 0x1080000;
 
 OUTPUT_FORMAT( "elf32-littlenios2",
                "elf32-littlenios2",
@@ -69,9 +66,12 @@ OUTPUT_ARCH( nios2 )
 ENTRY( _start )
 
 /*
- * The alt_load() facility is disabled. This typically happens when an
- * external bootloader is provided or the application runs in place.
- * The LMA (aka physical address) of each section defaults to its VMA.
+ * The alt_load() facility is enabled. This typically happens when there isn't
+ * an external bootloader (e.g. flash bootloader).
+ * The LMA (aka physical address) of each loaded section is
+ * set to the .text memory device.
+ * The HAL alt_load() routine called from crt0 copies sections from
+ * the .text memory to RAM as needed.
  */
 
 SECTIONS
@@ -93,6 +93,7 @@ SECTIONS
         KEEP (*(.irq));
         KEEP (*(.exceptions.entry.label));
         KEEP (*(.exceptions.entry.user));
+        KEEP (*(.exceptions.entry.ecc_fatal));
         KEEP (*(.exceptions.entry));
         KEEP (*(.exceptions.irqtest.user));
         KEEP (*(.exceptions.irqtest));
@@ -112,7 +113,7 @@ SECTIONS
         KEEP (*(.exceptions.exit));
         KEEP (*(.exceptions));
         PROVIDE (__ram_exceptions_end = ABSOLUTE(.));
-    } > onchip_memory
+    } > sdram
 
     PROVIDE (__flash_exceptions_start = LOADADDR(.exceptions));
 
@@ -196,7 +197,7 @@ SECTIONS
         PROVIDE (__fini_array_end = ABSOLUTE(.));
         SORT(CONSTRUCTORS)
         KEEP (*(.eh_frame))
-        *(.gcc_except_table)
+        *(.gcc_except_table .gcc_except_table.*)
         *(.dynamic)
         PROVIDE (__CTOR_LIST__ = ABSOLUTE(.));
         KEEP (*(.ctors))
@@ -208,7 +209,7 @@ SECTIONS
         PROVIDE (__DTOR_END__ = ABSOLUTE(.));
         KEEP (*(.jcr))
         . = ALIGN(4);
-    } > onchip_memory = 0x3a880100 /* Nios II NOP instruction */
+    } > sdram = 0x3a880100 /* NOP instruction (always in big-endian byte ordering) */
 
     .rodata :
     {
@@ -222,7 +223,18 @@ SECTIONS
 
     PROVIDE (__flash_rodata_start = LOADADDR(.rodata));
 
-    .rwdata :
+    /*
+     *
+     * This section's LMA is set to the .text region.
+     * crt0 will copy to this section's specified mapped region virtual memory address (VMA)
+     *
+     * .rwdata region equals the .text region, and is set to be loaded into .text region.
+     * This requires two copies of .rwdata in the .text region. One read writable at VMA.
+     * and one read-only at LMA. crt0 will copy from LMA to VMA on reset
+     *
+     */
+
+    .rwdata LOADADDR (.rodata) + SIZEOF (.rodata) : AT ( LOADADDR (.rodata) + SIZEOF (.rodata)+ SIZEOF (.rwdata) )
     {
         PROVIDE (__ram_rwdata_start = ABSOLUTE(.));
         . = ALIGN(4);
@@ -245,7 +257,14 @@ SECTIONS
 
     PROVIDE (__flash_rwdata_start = LOADADDR(.rwdata));
 
-    .bss :
+    /*
+     *
+     * This section's LMA is set to the .text region.
+     * crt0 will copy to this section's specified mapped region virtual memory address (VMA)
+     *
+     */
+
+    .bss LOADADDR (.rwdata) + SIZEOF (.rwdata) : AT ( LOADADDR (.rwdata) + SIZEOF (.rwdata) )
     {
         __bss_start = ABSOLUTE(.);
         PROVIDE (__sbss_start = ABSOLUTE(.));
@@ -276,32 +295,24 @@ SECTIONS
      * The output section used for the heap is treated in a special way,
      * i.e. the symbols "end" and "_end" are added to point to the heap start.
      *
+     * Because alt_load() is enabled, these sections have
+     * their LMA set to be loaded into the .text memory region.
+     * However, the alt_load() code will NOT automatically copy
+     * these sections into their mapped memory region.
+     *
      */
 
-    .onchip_memory :
-    {
-        PROVIDE (_alt_partition_onchip_memory_start = ABSOLUTE(.));
-        *(.onchip_memory. onchip_memory.*)
-        . = ALIGN(4);
-        PROVIDE (_alt_partition_onchip_memory_end = ABSOLUTE(.));
-    } > onchip_memory
+    /*
+     *
+     * This section's LMA is set to the .text region.
+     * crt0 will copy to this section's specified mapped region virtual memory address (VMA)
+     *
+     */
 
-    PROVIDE (_alt_partition_onchip_memory_load_addr = LOADADDR(.onchip_memory));
-
-    .flash_controller :
-    {
-        PROVIDE (_alt_partition_flash_controller_start = ABSOLUTE(.));
-        *(.flash_controller. flash_controller.*)
-        . = ALIGN(4);
-        PROVIDE (_alt_partition_flash_controller_end = ABSOLUTE(.));
-    } > flash_controller
-
-    PROVIDE (_alt_partition_flash_controller_load_addr = LOADADDR(.flash_controller));
-
-    .sdram :
+    .sdram LOADADDR (.bss) + SIZEOF (.bss) : AT ( LOADADDR (.bss) + SIZEOF (.bss) )
     {
         PROVIDE (_alt_partition_sdram_start = ABSOLUTE(.));
-        *(.sdram. sdram.*)
+        *(.sdram .sdram. sdram.*)
         . = ALIGN(4);
         PROVIDE (_alt_partition_sdram_end = ABSOLUTE(.));
         _end = ABSOLUTE(.);
@@ -310,6 +321,23 @@ SECTIONS
     } > sdram
 
     PROVIDE (_alt_partition_sdram_load_addr = LOADADDR(.sdram));
+
+    /*
+     *
+     * This section's LMA is set to the .text region.
+     * crt0 will copy to this section's specified mapped region virtual memory address (VMA)
+     *
+     */
+
+    .onchip_mem : AT ( LOADADDR (.sdram) + SIZEOF (.sdram) )
+    {
+        PROVIDE (_alt_partition_onchip_mem_start = ABSOLUTE(.));
+        *(.onchip_mem .onchip_mem. onchip_mem.*)
+        . = ALIGN(4);
+        PROVIDE (_alt_partition_onchip_mem_end = ABSOLUTE(.));
+    } > onchip_mem
+
+    PROVIDE (_alt_partition_onchip_mem_load_addr = LOADADDR(.onchip_mem));
 
     /*
      * Stabs debugging sections.
@@ -358,7 +386,7 @@ SECTIONS
 /*
  * Don't override this, override the __alt_stack_* symbols instead.
  */
-__alt_data_end = 0x10000000;
+__alt_data_end = 0x1000000;
 
 /*
  * The next two symbols define the location of the default stack.  You can
@@ -374,4 +402,4 @@ PROVIDE( __alt_stack_limit   = __alt_stack_base );
  * Override this symbol to put the heap in a different memory.
  */
 PROVIDE( __alt_heap_start    = end );
-PROVIDE( __alt_heap_limit    = 0x10000000 );
+PROVIDE( __alt_heap_limit    = 0x1000000 );

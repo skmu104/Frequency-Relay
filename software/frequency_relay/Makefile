@@ -129,30 +129,22 @@ BUILD_CONFIGS := default
 
 # This following VERSION comment indicates the version of the tool used to 
 # generate this makefile. A makefile variable is provided for VERSION as well. 
-# ACDS_VERSION: 13.0
-ACDS_VERSION := 13.0
+# ACDS_VERSION: 16.1
+ACDS_VERSION := 16.1
 
 # This following BUILD_NUMBER comment indicates the build number of the tool 
 # used to generate this makefile. 
-# BUILD_NUMBER: 156
+# BUILD_NUMBER: 196
 
 # Define path to the application ELF. 
 # It may be used by the makefile fragments so is defined before including them. 
 # 
-ELF := frequency_relay.elf
+ELF := 303_group_23_assignment_1.elf
 
 # Paths to C, C++, and assembly source files.
-C_SRCS += main_file.c
-C_SRCS += freertos/croutine.c
-C_SRCS += freertos/event_groups.c
-C_SRCS += freertos/heap.c
-C_SRCS += freertos/list.c
-C_SRCS += freertos/port.c
-C_SRCS += freertos/queue.c
-C_SRCS += freertos/tasks.c
-C_SRCS += freertos/timers.c
+C_SRCS := main.c
 CXX_SRCS :=
-ASM_SRCS := freertos/port_asm.S
+ASM_SRCS :=
 
 
 # Path to root of object file tree.
@@ -185,7 +177,7 @@ CRT0 :=
 SYS_LIB :=
 
 # Define path to the root of the BSP.
-BSP_ROOT_DIR := ../frequency_relay_bsp/
+BSP_ROOT_DIR := ../303_group_23_assignment_1_bsp/
 
 # List of application specific include directories, library directories and library names
 APP_INCLUDE_DIRS :=
@@ -260,7 +252,6 @@ ifneq ($(WARNING.SMALL_STACK_SIZE),)
 $(warning WARNING: $(WARNING.SMALL_STACK_SIZE))
 endif
 
-
 # If the BSP public.mk indicates that ALT_SIM_OPTIMIZE is set, rename the ELF 
 # by prefixing it with RUN_ON_HDL_SIMULATOR_ONLY_.  
 ifneq ($(filter -DALT_SIM_OPTIMIZE,$(ALT_CPPFLAGS)),)
@@ -324,13 +315,14 @@ else
 endif
 
 # Put each BSP dependent library in a group to avoid circular dependencies.
-APP_BSP_DEP_LIBS := $(foreach l,$(ALT_BSP_DEP_LIBRARY_NAMES),-Wl,--start-group -l$(ALT_C_LIBRARY) -lgcc -l$(l) -Wl,--end-group)
+APP_BSP_DEP_LIBS := $(foreach l,$(ALT_BSP_DEP_LIBRARY_NAMES),-Wl,--start-group -l$(ALT_C_LIBRARY) -lgcc -lm -l$(l) -Wl,--end-group)
 
 else # !AVOID_NIOS2_GCC3_OPTIONS
 
 #
 # Use Nios II GCC 3.X options.
 #
+ALT_BSP_DEP_LIBRARY_NAMES += $(ALT_BSP_DEP_LIBRARY_NAMES) m
 APP_BSP_DEP_LIBS := $(addprefix -msys-lib=, $(ALT_BSP_DEP_LIBRARY_NAMES))
 
 endif # !AVOID_NIOS2_GCC3_OPTIONS
@@ -437,7 +429,7 @@ endif
 # multiple .sopcinfo files in a Quartus project. 
 ifeq ($(JDI_FILE),)
 ifneq ($(QUARTUS_PROJECT_DIR),)
-JDI_FILE := $(wildcard $(QUARTUS_PROJECT_DIR)/*.jdi)
+JDI_FILE := $(firstword $(wildcard $(QUARTUS_PROJECT_DIR)/output_files/*.jdi) $(wildcard $(QUARTUS_PROJECT_DIR)/*.jdi))
 endif
 endif
 
@@ -626,7 +618,7 @@ ifeq ($(DEFAULT_CROSS_COMPILE),)
 DEFAULT_CROSS_COMPILE := nios2-elf-
 endif
 
-ifeq ($(DEFAULT_STACK_REPORT),)
+ifeq ($(DEFAULT_STACKREPORT),)
 DEFAULT_STACKREPORT := nios2-stackreport
 endif
 
@@ -683,15 +675,15 @@ ifeq ($(origin LD),default)
 LD := $(CROSS_COMPILE)g++
 endif
 
-ifeq ($(origin NM),default)
-NM := $(CROSS_COMPILE)nm
-endif
-
 ifeq ($(origin RM),default)
 RM := $(DEFAULT_RM)
 endif
 
-ifeq ($(origin CP),default)
+ifeq ($(NM),)
+NM := $(CROSS_COMPILE)nm
+endif
+
+ifeq ($(CP),)
 CP := $(DEFAULT_CP)
 endif
 
@@ -704,11 +696,9 @@ OBJCOPY := $(CROSS_COMPILE)objcopy
 endif
 
 ifeq ($(STACKREPORT),)
-ifeq ($(CROSS_COMPILE),nios2-elf-)
-STACKREPORT := $(DEFAULT_STACKREPORT)
+STACKREPORT := $(DEFAULT_STACKREPORT) --prefix $(CROSS_COMPILE)
 else
 DISABLE_STACKREPORT := 1
-endif
 endif
 
 ifeq ($(DOWNLOAD),)
@@ -856,16 +846,8 @@ help :
 	@$(ECHO) "    all (default)     - Application and all libraries (including BSP)"
 	@$(ECHO) "    bsp               - Just the BSP"
 	@$(ECHO) "    libs              - All libraries (including BSP)"
-	@$(ECHO) "    flash             - All flash files"	
+	@$(ECHO) "    flash             - All flash files"
 	@$(ECHO) "    mem_init_generate - All memory initialization files"
-ifeq ($(QSYS),1)
-	@$(ECHO) "    mem_init_install  - This target is deprecated for QSys Systems"
-	@$(ECHO) "                         --> Use the mem_init_generate target and then"
-	@$(ECHO) "                             add the generated meminit.qip file to your"
-	@$(ECHO) "                             Quartus II Project."
-else # if QSYS != 1
-	@$(ECHO) "    mem_init_install  - Copy memory initialization files to Quartus II project"
-endif # QSYS == 1
 	@$(ECHO)
 	@$(ECHO) "  Clean targets:"
 	@$(ECHO) "    clean_all         - Application and all libraries (including BSP)"
@@ -917,7 +899,7 @@ $(APP_LDDEPS): libs
 endif
 
 # Rules to force your project to rebuild or relink
-# .force_relink file will cause any application that depends on this project to relink 
+# .force_relink file will cause any application that depends on this project to relink
 # .force_rebuild file will cause this project to rebuild object files
 # .force_rebuild_all file will cause this project and any project that depends on this project to rebuild object files
 
@@ -984,9 +966,9 @@ download-elf : $(ELF)
 	else \
 		$(ECHO) Info: Downloading $(ELF); \
 		$(DOWNLOAD) --go --cpu_name=$(CPU_NAME) $(DOWNLOAD_CABLE_FLAG) $(SOPC_SYSID_FLAG) $(DOWNLOAD_JDI_FLAG) $(WRITE_GMON_OPTION) $(ELF); \
-	fi	
+	fi
 
-# Delete the target of a rule if it has changed and its commands exit 
+# Delete the target of a rule if it has changed and its commands exit
 # with a nonzero exit status.
 .DELETE_ON_ERROR:
 
@@ -1017,7 +999,8 @@ $(PROGRAM_FLASH_TARGET) : flash
 
 # Rules for simulating with an HDL Simulator [QSYS only]
 ifeq ($(QSYS),1)
-IP_MAKE_SIMSCRIPT := ip-make-simscript
+#Create a top level modelsim script load_sim.tcl to source generate msim_setup.tcl and copy mem initialization files
+CREATE_TOP_SIM_SCRIPT := alt-create-top-sim-script
 
 ifeq ($(VSIM),)
 VSIM_EXE := "$(if $(VSIM_DIR),$(VSIM_DIR)/,)vsim"
@@ -1031,15 +1014,18 @@ endif # VSIM not set
 ifeq ($(SPD),)
 ifneq ($(ABS_QUARTUS_PROJECT_DIR),)
 ifneq ($(SOPC_NAME),)
-SPD := $(ABS_QUARTUS_PROJECT_DIR)/$(SOPC_NAME)_tb.spd
+SPD_LOCATION = $(ABS_QUARTUS_PROJECT_DIR)/$(SOPC_NAME)_tb/$(SOPC_NAME)_tb/$(SOPC_NAME)_tb.spd
+LEGACY_SPD_LOCATION = $(ABS_QUARTUS_PROJECT_DIR)/$(SOPC_NAME)_tb.spd
+SPD = $(if $(wildcard $(SPD_LOCATION)),$(SPD_LOCATION),$(LEGACY_SPD_LOCATION))
 endif # SOPC_NAME set
 endif # ABS_QUARTUS_PROJECT_DIR set
 endif # SPD == empty string
 
-ifeq ($(MSIM_SCRIPT),)
+
+ifeq ($(LOAD_SIM_SCRIPT),)
 SIM_SCRIPT_DIR := $(RUNTIME_ROOT_DIR)/sim
-MSIM_SCRIPT := $(SIM_SCRIPT_DIR)/mentor/msim_setup.tcl
-endif # MSIM_SCRIPT == empty string
+LOAD_SIM_SCRIPT := $(SIM_SCRIPT_DIR)/mentor/load_sim.tcl
+endif # LOAD_SIM_SCRIPT == empty string
 
 ifeq ($(MAKE_VERSION),3.81)
 ABS_MEM_INIT_DESCRIPTOR_FILE := $(abspath $(MEM_INIT_DESCRIPTOR_FILE))
@@ -1047,25 +1033,27 @@ else
 ABS_MEM_INIT_DESCRIPTOR_FILE := $(call adjust-path-mixed,$(shell pwd))/$(MEM_INIT_DESCRIPTOR_FILE)
 endif
 
-$(MSIM_SCRIPT): $(SPD) $(MEM_INIT_DESCRIPTOR_FILE)
+$(LOAD_SIM_SCRIPT): $(SPD) $(MEM_INIT_DESCRIPTOR_FILE)
 ifeq ($(SPD),)
 	$(error No SPD file specified. Ensure QUARTUS_PROJECT_DIR variable is set)
 endif
 	@$(MKDIR) $(SIM_SCRIPT_DIR)
-	$(IP_MAKE_SIMSCRIPT) --spd=$(SPD) --spd=$(MEM_INIT_DESCRIPTOR_FILE) --output-directory=$(SIM_SCRIPT_DIR)
+	$(CREATE_TOP_SIM_SCRIPT) --spd=$(SPD) --mem-init-spd=$(abspath $(MEM_INIT_DESCRIPTOR_FILE)) --output-directory=$(SIM_SCRIPT_DIR)
 
 VSIM_COMMAND = \
-	cd $(dir $(MSIM_SCRIPT)) && \
-	$(VSIM) -do "do $(notdir $(MSIM_SCRIPT)); ld; $(if $(VSIM_RUN_TIME),run ${VSIM_RUN_TIME};quit;)"
+	cd $(dir $(LOAD_SIM_SCRIPT)) && \
+	$(VSIM) -do "do $(notdir $(LOAD_SIM_SCRIPT)); ld; $(if $(VSIM_RUN_TIME),run ${VSIM_RUN_TIME};quit;)"
 
 .PHONY: sim
-sim: $(MSIM_SCRIPT) mem_init_generate
-ifeq ($(MSIM_SCRIPT),)
-	$(error MSIM_SCRIPT not set)
+sim: $(LOAD_SIM_SCRIPT) mem_init_generate
+ifeq ($(LOAD_SIM_SCRIPT),)
+	$(error LOAD_SIM_SCRIPT not set)
 endif
 	$(VSIM_COMMAND)
 
 endif # QSYS == 1
+
+
 
 
 #------------------------------------------------------------------------------
