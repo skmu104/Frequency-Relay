@@ -1,564 +1,598 @@
-/*
- * Suraj Kumar
- */
-
-#include <system.h>
-#include <altera_avalon_pio_regs.h>
+#include <stddef.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <sys/alt_irq.h>
-#include <sys/alt_alarm.h>
 #include <string.h>
+#include <math.h>
+#include "system.h"
+#include "sys/alt_irq.h"
+#include "sys/alt_alarm.h"
+#include "sys/alt_timestamp.h"
+#include "io.h"
+#include "altera_avalon_pio_regs.h"
+#include "altera_up_avalon_ps2.h"
+#include "altera_up_ps2_keyboard.h"
 
-enum state_type{RR,GR,YR,RG,RY,GRP,RGP};
-volatile enum state_type state = RR;
-volatile enum state_type prev_state = RY;
+// Scheduler includes
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
+#include "freertos/timers.h"
+#include "freertos/event_groups.h"
 
-volatile int mutex_lock_flag = 0;
-
-volatile int mode = 0;
-
-enum ped_state{IDLE,NSP,EWP};
-volatile enum ped_state NSstate = IDLE;
-volatile enum ped_state EWstate = IDLE;
-volatile int pedNS = 0;
-volatile int pedEW = 0;
-volatile int NShandled = 0;
-volatile int EWhandled = 0;
-volatile int NSraised = 0;
-volatile int EWraised = 0;
-volatile int button_event = 0;
-volatile int cam_count = 0;
-volatile int vehicle_in = 0;
-volatile int snap_taken = 0;
-volatile int timer_event = 0;
-volatile int entered_on_green = 0;
-
-volatile int predef_time = 200; // 200 * 10ms = 2s
-
-volatile int T1 = 500;
-volatile int T2 = 6000;
-volatile int T3 = 2000;
-volatile int T4 = 500;
-volatile int T5 = 6000;
-volatile int T6 = 2000;
-volatile int timeout_set = 0;
-
-#define RR_LED  IOWR_ALTERA_AVALON_PIO_DATA(LEDS_GREEN_BASE, 0x24)
-#define GR_LED  IOWR_ALTERA_AVALON_PIO_DATA(LEDS_GREEN_BASE, 0x21)
-#define YR_LED  IOWR_ALTERA_AVALON_PIO_DATA(LEDS_GREEN_BASE, 0x22)
-#define RG_LED  IOWR_ALTERA_AVALON_PIO_DATA(LEDS_GREEN_BASE, 0x0c)
-#define RY_LED  IOWR_ALTERA_AVALON_PIO_DATA(LEDS_GREEN_BASE, 0x14)
-#define GRP_LED IOWR_ALTERA_AVALON_PIO_DATA(LEDS_GREEN_BASE, 0x61)
-#define RGP_LED IOWR_ALTERA_AVALON_PIO_DATA(LEDS_GREEN_BASE, 0x8C)
-#define ALL_LED IOWR_ALTERA_AVALON_PIO_DATA(LEDS_GREEN_BASE, 0xFF)
-#define NO_LED IOWR_ALTERA_AVALON_PIO_DATA(LEDS_GREEN_BASE, 0x00)
-
-#define READ_BUTTONS IORD_ALTERA_AVALON_PIO_DATA(BUTTONS_BASE)
-#define READ_SWITCHES 262143 - IORD_ALTERA_AVALON_PIO_DATA(SWITCHES_BASE)
-#define RED_LED_SWITCHES IOWR_ALTERA_AVALON_PIO_DATA(LEDS_RED_BASE, READ_SWITCHES)
-
+// Resource definitions
+#define READ_SWITCHES IORD_ALTERA_AVALON_PIO_DATA(SLIDE_SWITCH_BASE)
 #define ESC 27
 #define CLEAR_LCD_STRING "[2J"
 
+// Definition of Task Stacks
+#define TASK_STACKSIZE 2048
 
+// Task priorities
+#define STORE_FREQUENCY_PRIORITY 6
+#define SYSTEM_STATUS_PRIORITY 5
+#define CONFIG_INPUT_PRIORITY 4
+#define SWITCH_STATUS_PRIORITY 3
+#define LOAD_MANAGEMENT_PRIORITY 2
+#define RECORD_DISPLAY_PRIORITY 1
 
-// timer isr for the main traffic light controller
-// sets a flag to be handled in the main()
-alt_u32 tlc_timer_isr(void* context){
-	timer_event = 1;
-	return 0;
+// Task execution delays
+const TickType_t switchStatusDelay = 500;
+const TickType_t systemStatusDelay = 100;
+const TickType_t recordDisplayDelay = 250;
 
-}
+// Definition of Message Queue
+#define   CURRENT_FREQ_QUEUE_SIZE  1
+#define	  CONFIG_INPUT_QUEUE_SIZE 30
+#define	  STATUS_QUEUE_SIZE 30
+QueueHandle_t CurrentFreqQueue;
+QueueHandle_t ConfigInputQueue;
+QueueHandle_t StatusQueue;
 
+// Definition of Semaphores
+SemaphoreHandle_t current_freq_sem;
+SemaphoreHandle_t configure_sem;
+SemaphoreHandle_t maintenance_mode_sem;
+SemaphoreHandle_t switch_status_sem;
+SemaphoreHandle_t system_status_sem;
+SemaphoreHandle_t detection_sem;
+SemaphoreHandle_t measurement_time_sem;
 
-// timer isr for the red light camera
-// counts up by one every second
-alt_u32 camera_timer_isr(void* context){
-	cam_count++;
-	printf("cam_count: %i \n", cam_count);
-	return 10;
-}
+// Timer definition
+TimerHandle_t DeadlineTimer;
+const TickType_t deadlinePeriod = 500;
+TimerHandle_t SampleTimer;
+const TickType_t samplingPeriod = 200;
 
+// Event definition
+EventGroupHandle_t systemStatusEvent;
+#define STORE_BIT	( 1 << 0 )
+#define TIMER_BIT	( 1 << 1 )
+const uint32_t store_task = (1 << 0);
+const uint32_t timer_task = (1 << 1);
+const uint32_t both_tasks = ((1 << 0) | (1 << 1));
 
-// button isr
-void button_isr(void* context, alt_u32 id) {
-	if (mutex_lock_flag == 0) {
-		mutex_lock_flag = 1;
-		int buttonValue = READ_BUTTONS;
-		if (buttonValue == 6) { // KEY0 - NS Pedestrian Button
-			NSraised = 1;
-			NShandled = 0;
-		} else if (buttonValue == 5) { // KEY1 - EW Pedestrian Button
-			EWraised = 1;
-			EWhandled = 0;
-		} else if (buttonValue == 4) { // KEY0 and KEY1 at the same time
-			EWraised = 1;
-			EWhandled = 0;
-			NSraised = 1;
-			NShandled = 0;
-		} else if (mode == 4 && buttonValue == 3) { // KEY2
-			if (vehicle_in == 0) { // vehicle entering
-				vehicle_in = 1;
-				button_event = 1;
-				snap_taken = 0;
-			} else { // vehicle leaving
-				vehicle_in = 0;
-				button_event = 1;
-			}
-		}
+// Global variables
+volatile int keyPress = 0;
+double currentFreq = 0;
+double currentROC = 0;
+double underFreqValue = 49;
+double maxROCValue = 9.99;
+volatile int maintenanceMode = 0;
+volatile char switchStatus[] = "";
+volatile int systemStatus = 0;
+volatile int detection = 0;
+volatile int measurementTime[5] = {0,0,0,0,0};
+volatile double avg = 0;
+volatile int min = 9999;
+volatile int max = 0;
 
-		// clear edge capture register
-		IOWR_ALTERA_AVALON_PIO_EDGE_CAP(BUTTONS_BASE, 0);
+// Local Function Prototypes
+int initOSDataStructs(void);
+int initCreateTasks(void);
 
-		mutex_lock_flag = 0;
-	}
-}
-
-
-//////////////////////////////////////////////////          MAIN          \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
-
-int main(void)
+// Timer Call back functions
+void vDeadlineTimerCallback(TimerHandle_t DeadlineTimer)
 {
-	alt_alarm timer;
-	alt_alarm timer2;
+	xEventGroupSetBits(systemStatusEvent,TIMER_BIT);
+}
+//ISRs
+void freq_read_ISR()
+{
+	BaseType_t xHigherPriorityTaskWoken = pdTRUE;
+	unsigned int temp = IORD(FREQUENCY_ANALYSER_BASE, 0);
+	xQueueOverwriteFromISR(CurrentFreqQueue,(void *)&temp, &xHigherPriorityTaskWoken);
+	if (xSemaphoreTakeFromISR(detection_sem,&xHigherPriorityTaskWoken) == pdTRUE)
+	{
+		detection = (int) xTaskGetTickCount();
+	}
+	return;
+}
+void configuration_input_ISR(void *context, alt_u32 id)
+{
+	  BaseType_t xHigherPriorityTaskWoken = pdTRUE;
+	  char ascii;
+	  int status = 0;
+	  unsigned char key = 0;
+	  KB_CODE_TYPE decode_mode;
+	  status = decode_scancode (context, &decode_mode , &key , &ascii) ;
+	  if ( status == 0 ) //success
+	  {
+	    switch ( decode_mode )
+	    {
+	      case KB_ASCII_MAKE_CODE :
+	    	if (keyPress == 0)
+	    	{
+	    		//Converts input ascii to equivalent keyboard number
+	    		int temp = ascii - 48;
+	    		xQueueSendFromISR(ConfigInputQueue, (void *)&temp, &xHigherPriorityTaskWoken);
+	    		//global flag used to only send key press and not key release
+	        	keyPress = 1;
+	    	}
+	    	else
+	    	{
+	    		keyPress = 0;
+	    	}
+	        break;
+	      default :
+	        break ;
+	    }
+	  }
+}
 
-	FILE *lcd;
-	FILE *uart;
+void maintenance_isr(void* context, alt_u32 id)
+{
+	BaseType_t xHigherPriorityTaskWoken = pdTRUE;
+	int* temp = (int*) context;
+	(*temp) = IORD_ALTERA_AVALON_PIO_EDGE_CAP(PUSH_BUTTON_BASE);
+	xSemaphoreTakeFromISR(maintenance_mode_sem,xHigherPriorityTaskWoken);
+	// Checks KEY3
+	if (*temp == 4 && maintenanceMode == 1)
+	{
+		maintenanceMode = 0;
+		printf("Resuming load management\n");
+	}
+	else if (*temp == 4 && maintenanceMode == 0)
+	{
+		maintenanceMode = 1;
+		printf("Entering maintenance mode\n");
+	}
+	xSemaphoreGiveFromISR(maintenance_mode_sem,xHigherPriorityTaskWoken);
+	// clears the edge capture register
+	IOWR_ALTERA_AVALON_PIO_EDGE_CAP(PUSH_BUTTON_BASE, 0x7);
+}
 
-	uart = fopen(UART_NAME, "w");
-	fprintf(uart,"\f");
-	fclose(uart);
-
-	int context = 1;
-	int buttons_initialised = 0;
-	int temp_mode = 0;
-	int next_time = 0;
 
 
-	int timeCountMain = 0;
-	void* timerContext = (void*) &timeCountMain;
-	alt_alarm_start(&timer, 500, tlc_timer_isr,timerContext);
-
-	while(1) {
-
-		temp_mode = switch_read_mode();
-		// handles the switching of modes
-		// only change mode when in safe state, when a proper mode (i.e. 1,2,3, or 4) has been chosen, and the mode is not the same mode
-		if ((state == RR && temp_mode != 0 && temp_mode != mode) || (mode == 0)) {
-			if (mode == 0) {
-				lcd_mode(); // print "enter mode" to LCD
-				NO_LED;
-				// blocking until a mode is selected
-				while(mode == 0) {
-					change_mode(temp_mode);
-					temp_mode = switch_read_mode();
+// Tasks
+void store_frequency_task (void *pvParameters)
+{
+	alt_irq_register(FREQUENCY_ANALYSER_IRQ,0,freq_read_ISR);
+	int *temp;
+	int oldADCValue = 0;
+	int newADCValue = 0;
+	double oldFreq = 0;
+	double newFreq = 0;
+	double ROC = 0;
+	while(1)
+	{
+			if(xQueueReceive(CurrentFreqQueue,&temp,portMAX_DELAY) == pdPASS)
+			{
+				// Only store and compute ROC after two frequency readings
+				if (oldADCValue == 0)
+				{
+					oldADCValue = (int)temp;
 				}
-				// if selecting mode right at the start, reset the states and the timer
-
-				alt_alarm_stop(&timer);
-				state = RR;
-				prev_state = RY;
-				alt_alarm_start(&timer, 500, tlc_timer_isr,timerContext);
-			} else {
-				change_mode(temp_mode);
-			}
-			lcd_mode(); // print mode to LCD
-		}
-
-		// handles the main traffic light LEDs (all modes)
-		simple_tlc_leds();
-
-		// set the red LEDs based on which switches are turned on
-		RED_LED_SWITCHES;
-
-		// handles the changing of states (only when the timer flag is set, all modes)
-		if (timer_event == 1 && mutex_lock_flag == 0) {
-			mutex_lock_flag = 1;
-			alt_alarm_stop(&timer);
-			next_time = tlc_state_machine();
-			alt_alarm_start(&timer, next_time, tlc_timer_isr,timerContext);
-			timer_event = 0;
-			mutex_lock_flag = 0;
-		}
-
-
-		if (mode == 1) { // MODE 1 ONLY
-			init_buttons_pio(0,(void*) 1); // disable button interrupts in mode 1
-		} else { // MODE 2, 3, 4 ONLY
-			if (buttons_initialised == 0) { // enable button interrupts
-				init_buttons_pio(1,(void*) 1);
-				buttons_initialised = 1;
-			}
-			pedestrian_tlc();
-		}
-
-
-		if (mode == 3 || mode == 4) { // MODE 3, 4 ONLY
-			// in RR state, if SW4 and SW2 are on, or if SW4 and SW3 are on, configure new timeout values
-			// also, don't configure new values if timeout_set == 1 (which means that new values have been set but SW4 hasn't been turned off since then)
-			if (state == RR && (READ_SWITCHES == 20 || READ_SWITCHES == 24) && timeout_set == 0) {
-				alt_alarm_stop(&timer);
-				// blocking function to handle new timeout values
-				simple_tlc_leds(state); // sometimes the leds don't get set properly before the blocking function, so fixed it by setting them here
-				while(timeout_data_handler(*uart));
-				int temp_t;
-				if (prev_state == RY) {
-					temp_t = T1;
-				} else if (prev_state == YR) {
-					temp_t = T4;
+				else
+				{
+					newADCValue = (int)temp;
+					oldFreq = 16000.0 / oldADCValue;
+					newFreq = 16000.0 / newADCValue;
+					ROC = ((newFreq - oldFreq) * 32000.0) / (oldADCValue + newADCValue);
+					oldADCValue = 0;
+					newADCValue = 0;
+					xSemaphoreTake(current_freq_sem,portMAX_DELAY);
+					currentROC = fabs(ROC);
+					currentFreq = oldFreq;
+					xSemaphoreGive(current_freq_sem);
+					xEventGroupSetBits(systemStatusEvent,STORE_BIT);
 				}
-				alt_alarm_start(&timer, temp_t, tlc_timer_isr,timerContext);
-			// once SW4 is turned off, set timeout_set back to zero so that new values can be configured when SW4 is turned back on
-			} else if (state != RR && (READ_SWITCHES != 20 && READ_SWITCHES != 24 && READ_SWITCHES != 16)) {
-				timeout_set = 0;
+
+
 			}
-		}
-		if (mode == 4) { // MODE 4 ONLY
-			if (vehicle_in == 1 && button_event == 1){
-				// start vehicle timer, and print "Vehicle entered" to uart
-				alt_alarm_start(&timer2,1000,camera_timer_isr,timerContext);
-				button_event = 0;
-				camera_uart(4,*uart);
-				if (state == RG || state == GR) { // if car enters on a green, do not activate the camera
-					entered_on_green = 1;
-				} else {
-					camera_uart(1,*uart);
-					entered_on_green = 0;
+	}
+}
+
+void system_status_task (void *pvParameters)
+{
+	uint32_t uxBits;
+	int status;
+	BaseType_t xHigherPriorityTaskWoken = pdTRUE;
+	int oldStatus = 2;
+	// 1 = unstable
+	// 0 = stable
+	while(1)
+	{
+		uxBits = xEventGroupWaitBits(systemStatusEvent,both_tasks,pdTRUE,pdFALSE,2000);
+		if (uxBits == STORE_BIT || uxBits == TIMER_BIT || uxBits == (TIMER_BIT | STORE_BIT))
+		{// waits on bit set by either software timer or store frequency task
+			xSemaphoreTake(current_freq_sem,portMAX_DELAY);
+			xSemaphoreTake(configure_sem, portMAX_DELAY);
+			if (currentFreq < underFreqValue || currentROC > maxROCValue )
+			{//unstable condition. Exclusive comparison
+
+				if (oldStatus != 1 || uxBits > 1)
+				{// trigger load management either during change of state for first time or timer expiry
+					status = 1;
+
+					xTimerReset(DeadlineTimer,0);
+
+					//only set status to 1 during first breach or timer expiry not during flactuation of states
+					//status of 2 is arbitrary, doesn't cause any load management
+					if (oldStatus == 2 || oldStatus == 1)
+					{
+						status = 1;
+					}
+					else
+					{
+						status = 2;
+					}
+					xQueueSend(StatusQueue,(void *)&status,xHigherPriorityTaskWoken);
+					oldStatus = 1;
 				}
-				if (state == RR) {
-					// if vehicle enters on a red light, take snapshot immediately (but timer will still be active until the vehicle leaves)
-					camera_uart(3,*uart);
-					snap_taken = 1;
+				else if (oldStatus == 1 )
+				{//Reset the measurement timer when corresponding frequency doesnt require load managament
+					xSemaphoreGive(detection_sem);
 				}
 			}
-			else if (vehicle_in == 0 && button_event == 1){
-				// stop red light camera timer, print "Vehicle left" and camera time to uart
-				if (cam_count != 0) {
-					alt_alarm_stop(&timer2);
-					button_event = 0;
-					camera_uart(2,*uart);
-					cam_count = 0;
+			else {
+
+				if (oldStatus != 0 || uxBits > 1)
+				{
+					status = 0;
+					xTimerReset(DeadlineTimer,0);
+					//only set status to 1 during first breach or timer expiry not during flactuation of states
+					if (oldStatus == 0 || oldStatus == 2)
+					{
+						status = 0;
+					}
+					else
+					{
+						status = 2;
+					}
+					xQueueSend(StatusQueue,(void *)&status,xHigherPriorityTaskWoken);
+					oldStatus = 0;
+
 				}
-			} else if (vehicle_in == 1 && (cam_count >= predef_time) && snap_taken == 0 && entered_on_green == 0) {
-				// if vehicle is still in the intersection after a predefined time (and the snapshot wasn't already taken), take a snapshot
-				camera_uart(3,*uart);
-				snap_taken = 1;
+				else if (oldStatus == 0)
+				{
+					xSemaphoreGive(detection_sem);
+				}
+
 			}
+			xSemaphoreTake(system_status_sem,portMAX_DELAY);
+			systemStatus = status;
+			xSemaphoreGive(system_status_sem);
+			xSemaphoreGive(current_freq_sem);
+			xSemaphoreGive(configure_sem);
+			vTaskDelay(systemStatusDelay);
 		}
-	}
-
-	return 0;
-}
-
-//////////////////////////////////////////////////////////// \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
-
-void change_mode(int temp_mode) {
-	// change mode
-	mode = temp_mode;
-
-	// reset all relevant global variables
-	pedNS = 0;
-	pedEW = 0;
-	NShandled = 0;
-	EWhandled = 0;
-	NSraised = 0;
-	EWraised = 0;
-	button_event = 0;
-	cam_count = 0;
-	vehicle_in = 0;
-	snap_taken = 0;
-	timer_event = 0;
-
-	// if switching to mode 1 or 2, change back to default timeout values
-	if (temp_mode == 1 || temp_mode == 2) {
-		T1 = 500;
-		T2 = 6000;
-		T3 = 2000;
-		T4 = 500;
-		T5 = 6000;
-		T6 = 2000;
-
-		// timeout_set should not be reset if switching between modes 3 and 4
-		// if it was reset in mode 3/4, new values would have to be entered right away when switching between modes if SW4 is still on
-		timeout_set = 0;
-	}
-
-}
-
-// print to LCD
-void lcd_mode(FILE *lcd) {
-	lcd = fopen(LCD_NAME, "w");
-
-	if (mode == 0) {
-		fprintf(lcd, "%c%s", ESC, CLEAR_LCD_STRING);
-		fprintf(lcd, "Enter mode\n");
-	} else {
-		fprintf(lcd, "%c%s", ESC, CLEAR_LCD_STRING);
-		fprintf(lcd, "Mode: %d\n", mode);
-	}
-
-	fclose(lcd);
-}
-
-// state machine for main traffic lights
-int tlc_state_machine() {
-	int next_time = 0;
-	if (state == RR) {
-		if (prev_state == RY){
-			next_time = T2;
-			if ( pedNS == 0) {
-				state = GR;
-			} else if (mode != 1 && pedNS == 1) {
-				state = GRP;
-			}
-
-		}
-		else if (prev_state == YR){
-			next_time = T5;
-			if ( pedEW == 0) {
-				state = RG;
-			} else if ( mode!= 1 && pedEW == 1) {
-				state = RGP;
-			}
-		}
-		prev_state = RR;
-	} else if(state == GR){
-		next_time = T3;
-		state = YR;
-		prev_state = GR;
-	}  else if(state == YR){
-		next_time = T4;
-		state = RR;
-		prev_state = YR;
-	}  else if (state == RG){
-		next_time = T6;
-		state = RY;
-		prev_state = RG;
-	} else if (state == RY){
-		next_time = T1;
-		state = RR;
-		prev_state = RY;
-	} else if (state == GRP) {
-		next_time = T3;
-		state = RY;
-		prev_state = RGP;
-		NShandled = 1;
-		NSraised = 0;
-	} else if (state == RGP) {
-		next_time = T6;
-		state = RY;
-		prev_state = RGP;
-		EWhandled = 1;
-		EWraised = 0;
-	}
-
-	// returns the next timer time for the new state
-	return next_time;
-}
-
-int switch_read_mode() {
-	unsigned int switchesValue = READ_SWITCHES;
-	if (switchesValue == 1) {
-		return 1;
-	} else if (switchesValue == 2) {
-		return 2;
-	} else if (switchesValue == 4 || switchesValue == 20) {
-		return 3;
-	} else if (switchesValue == 8 || switchesValue == 24) {
-		return 4;
-	} else {
-		return 0;
 	}
 }
 
-// MODE 1 FUNCTIONS
-
-// set the LEDs based on the state
-void simple_tlc_leds() {
-
-		if (state == RR){
-			RR_LED;
-		}
-		else if(state == GR){
-			GR_LED;
-		}
-		else if (state == GRP) {
-			GRP_LED;
-		}
-		else if(state == YR){
-			YR_LED;
-		}
-		else if (state == RG){
-			RG_LED;
-		}
-		else if (state == RGP){
-			RGP_LED;
-		}
-		else if (state == RY){
-			RY_LED;
-		}
-}
-
-// MODE 2 FUNCTIONS
-
-
-void init_buttons_pio(int enable, void* context_going_to_be_passed) {
-	// clear the edge capture register
-	IOWR_ALTERA_AVALON_PIO_EDGE_CAP(BUTTONS_BASE, 0);
-	// enables/disables interrupts for all buttons
-	if (enable == 1) {
-		IOWR_ALTERA_AVALON_PIO_IRQ_MASK(BUTTONS_BASE, 0x7);
-	} else {
-		IOWR_ALTERA_AVALON_PIO_IRQ_MASK(BUTTONS_BASE, 0x0);
+void configuration_input_task (void *pvParameters)
+{
+	//Initialise Ps2 peripheral
+	alt_up_ps2_dev * ps2_device = alt_up_ps2_open_dev(PS2_NAME);
+	if(ps2_device == NULL){
+	  printf("can't find PS/2 device\n");
 	}
-	// register the ISR
-	alt_irq_register(BUTTONS_IRQ,context_going_to_be_passed,button_isr);
-}
-
-// state machine(s) for pedestrian lights
-void pedestrian_tlc() {
-
-	if (NSstate == IDLE && NSraised == 1) {
-		NSstate = NSP;
-		pedNS = 1;
-	} else if (NSstate == NSP && NShandled == 1) {
-		NSstate = IDLE;
-		pedNS = 0;
-	}
-
-	if (EWstate == IDLE && EWraised == 1) {
-		EWstate = EWP;
-		pedEW = 1;
-	} else if (EWstate == EWP && EWhandled == 1) {
-		EWstate = IDLE;
-		pedEW = 0;
-	}
-
-}
-
-
-
-// MODE 3 FUNCTIONS
-
-int timeout_data_handler(FILE *uart) {
-	printf("Waiting for new timeout values...\n");
-	uart = fopen(UART_NAME, "w");
-	fprintf(uart,"Enter new timeout values... \r\n");
-	fclose(uart);
-	uart = fopen(UART_NAME, "r");
-	char data_array[35];
-	// format: #,#,#,#,#,#[\r]\n
-	// where # is a 1-4 digit integer
-	// \r is ignored (and may or may-not be received)
-
-	int current_char = 0;
-	int previous_char = 0;
+	alt_up_ps2_clear_fifo (ps2_device) ;
+	alt_irq_register(PS2_IRQ, ps2_device, configuration_input_ISR);
+	IOWR_8DIRECT(PS2_BASE,4,1);
+	//Variable to store what is received from queue
+	int *temp;
+	//Flags used to convey configuration state
+	int CUnderFreqFlag = 0;
+	int CMaxROCFlag = 0;
+	int UnderFreq[2];
+	int MaxROC[3];
 	int i = 0;
+	//Operation of configuration of threshold values explained in README
+	while(1)
+	{
+		 if (xQueueReceive(ConfigInputQueue, &temp, portMAX_DELAY) == pdPASS)
+		 {
+			 if ((int)temp == 19){// 19 represents 'c' character
+				 if (CUnderFreqFlag == 0 && CMaxROCFlag == 0)
+				 {
+					 //seven seg says 'c' when expecting further config values
+					 IOWR(SEVEN_SEG_BASE,0,12);
+					 printf("Enter integer value for lower frequency limit (max 99):\n");
+				 	 CUnderFreqFlag = 1;
+				 }
+				 else if (CUnderFreqFlag == 1)
+				 {
+					 xSemaphoreTake(configure_sem, portMAX_DELAY);
+					 printf("\nNew lower frequency threshold configured\n");
+					 underFreqValue = UnderFreq[0]*10 + UnderFreq[1];
+					 printf("Value is: %f\n",underFreqValue);
+					 printf("Enter 2dp double value for maximum rate of change ( ie; 1.56): \n");
+					 CMaxROCFlag = 1;
+					 CUnderFreqFlag = 0;
+					 i = 0;
+					 xSemaphoreGive(configure_sem);
+				 }
+				 else if (CMaxROCFlag == 1){
+					 xSemaphoreTake(configure_sem,portMAX_DELAY);
+					 printf("\nNew rate of change threshold value configured\n");
+					 maxROCValue = MaxROC[0] + (MaxROC[1]/10.0) + (MaxROC[2]/100.0);
+					 printf("Value is: %f\n",maxROCValue);
+					 IOWR(SEVEN_SEG_BASE,0,'0');
+					 CMaxROCFlag = 0;
+					 i = 0;
+					 xSemaphoreGive(configure_sem);
+				 }
+			 }
+			 else if (CUnderFreqFlag == 1 && i < 2)
+			 {
+				 UnderFreq[i] = (int) temp;
+				 printf("%d",UnderFreq[i]);
+				 i++;
+			 }
+			 else if (CMaxROCFlag == 1 && i < 3)
+			 {
+				 MaxROC[i] = (int) temp;
+				 if (i == 0)
+				 {
+					 printf("%d.",MaxROC[i]);
+				 }
+				 else
+				 {
+					 printf("%d",MaxROC[i]);
+				 }
+				 i++;
+			 }
+		 }
 
-	printf("Input: ");
+	}
+}
 
-
-
-	// get values until "\n" entered
-	while ((current_char != 'n' || previous_char != '\\') && current_char != 10) { // will terminate if an actual new line character is entered (ascii 10), or if a '\', followed by a 'n' is entered
-		if (i > 34) { // too many values entered,
-			uart = fopen(UART_NAME, "w");
-			fprintf(uart,"\r\nToo many Timeout Values, please enter new ones.\r\n");
-			fclose(uart);
-			printf("\nToo many Timeout Values, please enter new ones. \n");
-			return 1;
+void switch_status_task (void *pvParameters)
+{
+	char switchValue[]= "";
+	int buttonValue = 0;
+	// clears the edge capture register. Writing 1 to bit clears pending interrupt for corresponding button.
+	IOWR_ALTERA_AVALON_PIO_EDGE_CAP(PUSH_BUTTON_BASE, 0x7);
+	// enable interrupts for all buttons
+	IOWR_ALTERA_AVALON_PIO_IRQ_MASK(PUSH_BUTTON_BASE, 0x7);
+	// register the ISR
+	alt_irq_register(PUSH_BUTTON_IRQ,(void*)&buttonValue, maintenance_isr);
+	while(1)
+	{
+		//reads switches values and stores into global char array
+		int switchValDec = READ_SWITCHES;
+		int i = 0;
+		xSemaphoreTake(switch_status_sem,portMAX_DELAY);
+		for(i = 0; i < 5;i++) // converting decimal value to binary to store into array
+		{
+			if (switchValDec % 2 == 0)
+			{
+				switchValue[4-i] = '0';
+			}
+			else
+			{
+				switchValue[4-i] = '1';
+			}
+			switchValDec = switchValDec / 2;
 		}
-		printf("%c",current_char);
-		previous_char = current_char;
-		current_char = fgetc(uart);
-		data_array[i] = (char)current_char;
-		i++;
-	}
-	fclose(uart);
 
-	printf("%c",current_char);
-	printf("\n");
-
-	const char s[2] = ",";
-
-	char *token = strtok(data_array,s);
-
-	int temp[6];
-
-	i = 0;
-
-	// split input by ","
-	while(token != NULL) {
-		temp[i] = atoi(token);
-		token = strtok(NULL, s);
-		i++;
-	}
-
-
-	// return 1 (i.e. start the function again) if character is invalid)
-	for (i = 0; i < 6; i++) {
-		if (temp[i] <= 0 || temp[i] >= 10000 || temp[i] == NULL) {
-			uart = fopen(UART_NAME, "w");
-			fprintf(uart,"\r\nBad Timeout Values, please enter new ones.\r\n");
-			fclose(uart);
-			printf("Bad Timeout Values, please enter new ones. \n");
-			return 1;
+		for (i = 0; i < 5; i++)
+		{
+			switchStatus[i] = switchValue[i];
 		}
+		xSemaphoreGive(switch_status_sem);
+		vTaskDelay(switchStatusDelay);
 	}
+}
 
-	// set timeouts
+void load_management_task (void *pvParameters)
+{
+	int status;
+	int *temp;
+	char rLEDS[] = "00000";
+	char gLEDS[] = "00000";
+	int binary = 2;
+	int rLedValue = 0;
+	int gLedValue = 0;
+	int maintenance;
+	int i;
+	int time = 0;
+	int sum = 0;
+	int count = 0;
+	while(1)
+	{
+		if (xQueueReceive(StatusQueue,&temp,portMAX_DELAY) == pdPASS)
+		{
+			status = (int)temp;
+			xSemaphoreTake(switch_status_sem,portMAX_DELAY);
+			xSemaphoreTake(maintenance_mode_sem,portMAX_DELAY);
+			maintenance = maintenanceMode;
+			xSemaphoreGive(maintenance_mode_sem);
+			//Checks if any manual switches are turned down
+			for (i = 0;i < 5;i++){
+				if (switchStatus[i] == '0')
+				{
+					rLEDS[i] = '0';
+					gLEDS[i] = '0';
+				}
+			}
+			if (maintenance == 1) // Checks maintenance mode
+			{
+				for (i = 0;i < 5;i++ )
+				{
+					if (switchStatus[4-i] == '1')
+					{
+						rLEDS[4-i] = '1';
+					}
+					gLEDS[4-i] = '0';
 
-	T1 = temp[0];
-	T2 = temp[1];
-	T3 = temp[2];
-	T4 = temp[3];
-	T5 = temp[4];
-	T6 = temp[5];
-	timeout_set = 1;
+				}
+			}
+			else if (status == 1) // Management when system unstable
+			{
+				for (i = 0;i < 5; i ++)
+				{
+					if (switchStatus[4-i] == '1' && rLEDS[4-i] == '1')
+					{
+						rLEDS[4-i] = '0';
+						gLEDS[4-i] = '1';
+						break;
+					}
+				}
+			}
+			else if (status == 0) // Management when system stable
+			{
+				for (i = 0; i < 5; i++)
+				{
+					if (switchStatus[i] == '1' && rLEDS[i] == '0')
+					{
+						rLEDS[i] = '1';
+						gLEDS[i] = '0';
+						break;
+					}
+				}
+			}
+			//sets integer value for LEDs depending on array of load states
+			binary = 2;
+			rLedValue = 0;
+			gLedValue = 0;
+			for (i = 0; i < 5; i++)
+			{
+				if (rLEDS[4-i] == '1' )
+				{
+					rLedValue = rLedValue + pow(binary,i);
+				}
+				if (gLEDS[4-i] == '1' && maintenance == 0)
+				{
+					gLedValue = gLedValue + pow(binary,i);
+				}
+			}
 
-	uart = fopen(UART_NAME, "w");
-	fprintf(uart,"T1: %d, T2: %d, T3: %d, T4: %d, T5: %d, T6: %d\r\n\n", T1, T2, T3, T4, T5, T6);
-	fclose(uart);
 
-	printf("New Timeout Values -  T1: %d, T2: %d, T3: %d, T4: %d, T5: %d, T6: %d\n", T1, T2, T3, T4, T5, T6);
+			// Takes measurement of load management readings
+			xSemaphoreTake(measurement_time_sem,portMAX_DELAY);
+			time = (int) xTaskGetTickCount() - detection;
+			xSemaphoreGive(detection_sem);
+			if (time != 0 )
+			{
+				for (i = 4; i > 0; i--)
+				{
+					measurementTime[i] = measurementTime[i-1];
+				}
+				measurementTime[0] = time;
+				sum += measurementTime[0];
+				count++;
+				avg =(double) sum / count;
+				if (measurementTime[0] >= max)
+				{
+					max = measurementTime[0];
+				}
+				if (measurementTime[0] <= min)
+				{
+					min = measurementTime[0];
+				}
+			}
+			xSemaphoreGive(measurement_time_sem);
+			// sets green and red LEDs
+			IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, rLedValue);
+			IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, gLedValue);
+			xSemaphoreGive(switch_status_sem);
 
+		}
+
+	}
+}
+
+void record_display_task (void *pvParameters)
+{
+	FILE *lcd;
+	lcd = fopen(CHARACTER_LCD_NAME, "w");
+	int tick;
+	while(1)
+	{
+			xSemaphoreTake(current_freq_sem,portMAX_DELAY);
+			xSemaphoreTake(system_status_sem,portMAX_DELAY);
+			fprintf(lcd, "%c%s", ESC, CLEAR_LCD_STRING);
+			fprintf(lcd, "%.2fHz ROC:%.2f\n",currentFreq,currentROC);
+			if (systemStatus == 0)
+			{
+				fprintf(lcd,"System Stable\n");
+			}
+			else
+			{
+				fprintf(lcd,"System Unstable\n");
+			}
+			xSemaphoreGive(current_freq_sem);
+			xSemaphoreGive(system_status_sem);
+			tick = (int) xTaskGetTickCount();
+			xSemaphoreTake(measurement_time_sem,portMAX_DELAY);
+			printf("-------------------------------------------------------\n");
+			printf("System uptime : %d.%d s\n",tick / 1000,(tick -  (tick/1000)*1000)/10 );
+			printf("Time Measurements (ms):\n");
+			printf ("%d  %d  %d  %d  %d\n", measurementTime[0],measurementTime[1],measurementTime[2],measurementTime[3],measurementTime[4]);
+			printf("Average Time: %f  Minimum Time: %d  Maximum Time: %d\n",avg,min,max);
+			printf("-------------------------------------------------------\n");
+			xSemaphoreGive(measurement_time_sem);
+			vTaskDelay(recordDisplayDelay);
+	}
+}
+
+
+
+int main()
+{
+  IOWR_ALTERA_AVALON_PIO_DATA(SEVEN_SEG_BASE,'0');
+  initCreateTasks();
+  initOSDataStructs();
+  vTaskStartScheduler();
+  for (;;);
+  return 0;
+}
+
+// This function simply creates a message queue and a semaphore
+int initOSDataStructs(void)
+{
+	// Queues
+	ConfigInputQueue = xQueueCreate( CONFIG_INPUT_QUEUE_SIZE, sizeof( int ) );
+	CurrentFreqQueue = xQueueCreate(CURRENT_FREQ_QUEUE_SIZE, sizeof(int));
+	StatusQueue = xQueueCreate(STATUS_QUEUE_SIZE,sizeof(int));
+	// Semaphores
+	current_freq_sem = xSemaphoreCreateMutex();
+	configure_sem = xSemaphoreCreateMutex();
+	maintenance_mode_sem = xSemaphoreCreateMutex();
+	switch_status_sem = xSemaphoreCreateMutex();
+	system_status_sem = xSemaphoreCreateMutex();
+	detection_sem = xSemaphoreCreateBinary();
+	xSemaphoreGive(detection_sem);
+	measurement_time_sem = xSemaphoreCreateMutex();
+	// Timers
+	DeadlineTimer = xTimerCreate("deadline",deadlinePeriod,pdFALSE,(void *) 0, vDeadlineTimerCallback);
+	// Events
+	systemStatusEvent = xEventGroupCreate();
 	return 0;
 }
 
-
-// MODE 4 FUNCTIONS
-
-void camera_uart(int s,FILE *uart){
-	uart = fopen(UART_NAME, "w");
-
-	// formatting looks ugly here but good on PuTTY
-
-	printf("entered_on_green: %d", entered_on_green);
-
-	if (s == 1){
-		fprintf(uart,"    ---- Camera Activated ----    \r\n\n");
-
-	}
-	else if(s == 2){
-		fprintf(uart,"      ---- Vehicle Left ----    \r\n");
-		// cam_count is the amount of 10s of ms that have passed, so divide by 10 to display in seconds
-		fprintf(uart,"  Vehicle left after %.2f seconds    \r\n\n\n",((double)cam_count)/100);
-	}
-
-	else if (s == 3) {
-		fprintf(uart,"          Snapshot Taken    \r\n\n");
-	}
-
-	else if (s == 4) {
-		fprintf(uart,"\f     ---- Vehicle Entered ----    \r\n");
-	}
-
-	fclose(uart);
+// This function creates the tasks used in this example
+int initCreateTasks(void)
+{
+	xTaskCreate(store_frequency_task,"store_frequency_task",TASK_STACKSIZE,NULL,STORE_FREQUENCY_PRIORITY,NULL);
+	xTaskCreate(system_status_task,"system_status_task",TASK_STACKSIZE,NULL,SYSTEM_STATUS_PRIORITY,NULL);
+	xTaskCreate(configuration_input_task,"configuration_input_task",TASK_STACKSIZE,NULL,CONFIG_INPUT_PRIORITY,NULL);
+	xTaskCreate(switch_status_task,"switch_status_task",TASK_STACKSIZE,NULL,SWITCH_STATUS_PRIORITY,NULL);
+	xTaskCreate(load_management_task,"load_management_task",TASK_STACKSIZE,NULL,LOAD_MANAGEMENT_PRIORITY,NULL);
+	xTaskCreate(record_display_task,"record_display_task",TASK_STACKSIZE,NULL,RECORD_DISPLAY_PRIORITY,NULL);
+	return 0;
 }
-
-
-
 
 
 
